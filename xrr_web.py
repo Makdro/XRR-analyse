@@ -55,7 +55,7 @@ app.layout = html.Div([
         value='SiO2'
     ),
     html.Br(),
-    html.Button('Lancer l'analyse', id='run-button', n_clicks=0),
+    html.Button('Lancer analyse', id='run-button', n_clicks=0),
     html.Br(),
     html.Div(id='results-div'),
     dcc.Graph(id='main-graph')
