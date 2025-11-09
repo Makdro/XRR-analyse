@@ -1,9 +1,9 @@
 dash
-matplotlib
 numpy
 scipy
+matplotlib
 scikit-learn
-pandas
 gunicorn
+
 
 
