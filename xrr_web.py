@@ -106,7 +106,7 @@ def run_thin(two_theta, intensity):
     fig.add_trace(go.Scatter(x=two_theta, y=intensity, mode='lines', name='Signal brut'))
     fig.update_layout(title="Mode fine couche - signal brut",
                       xaxis_title='2θ (deg)',
-                      yaxis_title='Intensité (a.u.) [log]")
+                      yaxis_title='Intensité (a.u.) [log]')
     return fig, "Analyse fine couche - pics très larges, traitement manuel conseillé."
 
 # ===============================================================
