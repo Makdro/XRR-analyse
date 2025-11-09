@@ -1,0 +1,6 @@
+dash
+numpy
+scipy
+matplotlib
+scikit-learn
+gunicorn
