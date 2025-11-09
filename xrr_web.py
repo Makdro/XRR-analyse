@@ -1,144 +1,172 @@
+import numpy as np
+import matplotlib.pyplot as plt
+from scipy.signal import find_peaks
+from scipy.ndimage import gaussian_filter1d
+from sklearn.linear_model import LinearRegression
 import dash
-from dash import html, dcc, Input, Output, State
-import subprocess
-import sys
-import os
+from dash import dcc, html, Input, Output, State
+import base64
+import io
 
 # ===============================================================
-# 🌐 CONFIGURATION DE L'APPLICATION DASH
+# Dash App
 # ===============================================================
 app = dash.Dash(__name__)
-app.title = "Analyse XRR - Interface Web"
+app.title = "XRR Analysis"
 
-# Liste des matériaux pour la densité
-materiaux = {
-    'Al2O3': 3.95,  # exemple densité g/cm³
-    'SiO2': 2.2,
-    'AZ326MIF': 1.3
+# ===============================================================
+# Layout
+# ===============================================================
+app.layout = html.Div([
+    html.H1("XRR Analysis Tool"),
+    html.Label("Choisissez le programme"),
+    dcc.Dropdown(
+        id='program-dropdown',
+        options=[
+            {'label': 'Auto', 'value': 'auto'},
+            {'label': 'Manuel', 'value': 'manual'},
+            {'label': 'Thin Layer', 'value': 'thinlayer'}
+        ],
+        value='auto'
+    ),
+    html.Br(),
+    html.Label("Upload du fichier XRR (.xy)"),
+    dcc.Upload(
+        id='upload-data',
+        children=html.Div(['Glissez-déposez ou sélectionnez un fichier']),
+        style={
+            'width': '100%', 'height': '60px', 'lineHeight': '60px',
+            'borderWidth': '1px', 'borderStyle': 'dashed', 'borderRadius': '5px',
+            'textAlign': 'center', 'margin-bottom': '20px'
+        },
+        multiple=False
+    ),
+    html.Label("Choisissez le matériau pour calcul densité"),
+    dcc.Dropdown(
+        id='material-dropdown',
+        options=[
+            {'label': 'SiO2 (amorphe)', 'value': 'SiO2'},
+            {'label': 'Al2O3 (amorphe)', 'value': 'Al2O3'},
+            {'label': 'TiO2 (anatase)', 'value': 'TiO2_anatase'},
+            {'label': 'TiO2 (rutile)', 'value': 'TiO2_rutile'},
+            {'label': 'Pt (platine)', 'value': 'Pt'},
+            {'label': 'Autre', 'value': 'Other'}
+        ],
+        value='SiO2'
+    ),
+    html.Br(),
+    html.Button('Lancer l'analyse', id='run-button', n_clicks=0),
+    html.Br(),
+    html.Div(id='results-div'),
+    dcc.Graph(id='main-graph')
+])
+
+# ===============================================================
+# Matériaux pour densité
+# ===============================================================
+materiaux_info = {
+    "SiO2": {"M": 60.08, "Z": 30, "dens": 2.20},
+    "Al2O3": {"M": 101.96, "Z": 50, "dens": 3.97},
+    "TiO2_anatase": {"M": 79.87, "Z": 38, "dens": 3.90},
+    "TiO2_rutile": {"M": 79.87, "Z": 38, "dens": 4.23},
+    "Pt": {"M": 195.08, "Z": 78, "dens": 21.45}
 }
 
 # ===============================================================
-# 🖼️ LAYOUT DE L'APPLICATION
+# Helper functions
 # ===============================================================
-app.layout = html.Div(style={'font-family': 'Arial', 'text-align': 'center', 'margin': '30px'},
-    children=[
-        html.H1("⚡ Analyse XRR - Interface Web", style={'color': '#003366'}),
-        html.P("Choisissez le mode d'analyse :", style={'font-size': '18px'}),
-        
-        html.Div([
-            html.Button("Mode automatique", id="btn-auto", n_clicks=0,
-                        style={'margin': '10px', 'padding': '15px 25px', 'font-size': '16px'}),
-            html.Button("Mode manuel", id="btn-manuel", n_clicks=0,
-                        style={'margin': '10px', 'padding': '15px 25px', 'font-size': '16px'}),
-            html.Button("Mode fine couche", id="btn-thin", n_clicks=0,
-                        style={'margin': '10px', 'padding': '15px 25px', 'font-size': '16px'}),
-        ]),
-        
-        html.Hr(),
-        html.Div(id='file-upload-div', style={'margin-top': '20px'}),
-        html.Div(id="output", style={'font-size': '18px', 'margin-top': '30px', 'color': '#006600'})
-    ]
-)
+def parse_contents(contents):
+    content_type, content_string = contents.split(',')
+    decoded = base64.b64decode(content_string)
+    s = io.StringIO(decoded.decode('utf-8'))
+    data = np.loadtxt(s)
+    two_theta = data[:,0]
+    intensity = data[:,1]
+    return two_theta, intensity
 
 # ===============================================================
-# ⚙️ CALLBACK POUR AFFICHER LE UPLOAD APRÈS CHOIX DU MODE
+# Callback
 # ===============================================================
 @app.callback(
-    Output('file-upload-div', 'children'),
-    Input('btn-auto', 'n_clicks'),
-    Input('btn-manuel', 'n_clicks'),
-    Input('btn-thin', 'n_clicks'),
+    Output('results-div', 'children'),
+    Output('main-graph', 'figure'),
+    Input('run-button', 'n_clicks'),
+    State('program-dropdown', 'value'),
+    State('upload-data', 'contents'),
+    State('material-dropdown', 'value')
 )
-def show_upload(n_auto, n_manual, n_thin):
-    ctx = dash.callback_context
-    if not ctx.triggered:
-        return ""
-    button_id = ctx.triggered[0]['prop_id'].split('.')[0]
+def run_analysis(n_clicks, program, contents, material_choice):
+    if n_clicks == 0 or contents is None:
+        return '', {}
 
-    return html.Div([
-        html.P("📂 Uploadez votre fichier XRR :", style={'font-size': '16px'}),
-        dcc.Upload(
-            id='upload-file',
-            children=html.Div(['Glissez-déposez ou cliquez pour sélectionner le fichier']),
-            style={
-                'width': '50%',
-                'height': '60px',
-                'lineHeight': '60px',
-                'borderWidth': '1px',
-                'borderStyle': 'dashed',
-                'borderRadius': '5px',
-                'textAlign': 'center',
-                'margin': '10px auto'
-            },
-            multiple=False
-        ),
-        html.P("Choisissez le matériau pour la densité :"),
-        dcc.Dropdown(
-            id='dropdown-materiau',
-            options=[{'label': k, 'value': k} for k in materiaux.keys()],
-            value=list(materiaux.keys())[0],
-            style={'width': '50%', 'margin': '0 auto'}
-        ),
-        html.Button("Lancer l'analyse", id='launch-btn', n_clicks=0,
-                    style={'margin-top': '15px', 'padding': '10px 20px', 'font-size': '16px'})
-    ])
+    # ===========================================================
+    # Constants
+    lambda_Cu = 0.15418  # nm
+    r_e = 2.8179403262e-5  # Å
+    N_A = 6.02214076e23
 
-# ===============================================================
-# ⚙️ CALLBACK POUR LANCER LES PROGRAMMES
-# ===============================================================
-@app.callback(
-    Output('output', 'children'),
-    Input('launch-btn', 'n_clicks'),
-    State('upload-file', 'contents'),
-    State('upload-file', 'filename'),
-    State('dropdown-materiau', 'value'),
-    State('btn-auto', 'n_clicks'),
-    State('btn-manuel', 'n_clicks'),
-    State('btn-thin', 'n_clicks')
-)
-def launch_mode(n_launch, file_contents, filename, materiau, n_auto, n_manual, n_thin):
-    if n_launch == 0 or file_contents is None:
-        return "Sélectionnez un fichier et un mode pour lancer l'analyse."
+    # ===========================================================
+    # Parse file
+    two_theta, intensity = parse_contents(contents)
 
-    # Sauvegarde temporaire du fichier uploadé
-    import base64
-    import io
-    data = file_contents.encode("utf8").split(b";base64,")[1]
-    file_path = os.path.join(os.getcwd(), filename)
-    with open(file_path, "wb") as f:
-        f.write(base64.b64decode(data))
+    # ===========================================================
+    # Densité et matériau
+    if material_choice in materiaux_info:
+        mat = materiaux_info[material_choice]
+        M, Z = mat['M'], mat['Z']
+    else:
+        M = 60.0  # placeholder, peut être input
+        Z = 30
 
-    ctx = dash.callback_context
-    button_id = None
-    # Détection du mode choisi
-    if n_auto > 0:
-        button_id = "btn-auto"
-    elif n_manual > 0:
-        button_id = "btn-manuel"
-    elif n_thin > 0:
-        button_id = "btn-thin"
+    # ===========================================================
+    # Auto mode (détection automatique)
+    if program == 'auto':
+        sigma_smooth = 5
+        intensity_smooth = gaussian_filter1d(intensity, sigma=sigma_smooth)
+        intensity_detrend = intensity / intensity_smooth
+        signal_log = np.log10(intensity+1)
+        second_derivative = np.gradient(np.gradient(signal_log))
+        peaks, _ = find_peaks(second_derivative, prominence=0.01)
 
-    # Détermine quel script exécuter
-    if button_id == "btn-auto":
-        subprocess.Popen([sys.executable, "xrr_auto_dash.py", file_path, materiau],
-                         creationflags=subprocess.CREATE_NEW_CONSOLE, cwd=os.getcwd())
-        return f"🚀 Programme automatique lancé pour {materiau} !"
+        # sélection des 10 premiers pics
+        peaks_selected = peaks[:10]
+        theta_peaks = two_theta[peaks_selected]/2
 
-    elif button_id == "btn-manuel":
-        subprocess.Popen([sys.executable, "xrr_manual_dash.py", file_path, materiau],
-                         creationflags=subprocess.CREATE_NEW_CONSOLE, cwd=os.getcwd())
-        return f"🧭 Programme manuel lancé pour {materiau} !"
+    # Manual and Thinlayer: interactive selection simplified as first 10 maxima
+    else:
+        intensity_smooth = gaussian_filter1d(intensity, sigma=5)
+        peaks, _ = find_peaks(intensity_smooth, distance=5)
+        theta_peaks = two_theta[peaks[:10]]/2
 
-    elif button_id == "btn-thin":
-        subprocess.Popen([sys.executable, "xrr_thinlayer_dash.py", file_path, materiau],
-                         creationflags=subprocess.CREATE_NEW_CONSOLE, cwd=os.getcwd())
-        return f"🧪 Programme fine couche lancé pour {materiau} !"
+    # ===========================================================
+    # Fit linéaire pour épaisseur
+    m = np.arange(1, len(theta_peaks)+1)
+    m2 = m**2
+    theta2 = np.deg2rad(theta_peaks)**2
+    reg = LinearRegression().fit(m2.reshape(-1,1), theta2)
+    a = reg.coef_[0]
+    t = np.sqrt(lambda_Cu**2 / (4*a))
 
-    return "⚠️ Erreur : mode inconnu."
+    # ===========================================================
+    # Densité
+    theta_c_rad = np.deg2rad(theta_peaks[0])
+    rho_e = (np.pi*theta_c_rad**2)/(r_e*lambda_Cu**2)
+    rho_mass = rho_e*M/(Z*N_A)*1e24
+
+    # ===========================================================
+    # Graphique
+    import plotly.graph_objects as go
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(x=two_theta, y=intensity, mode='lines', name='Signal'))
+    fig.add_trace(go.Scatter(x=theta_peaks*2, y=np.interp(theta_peaks*2, two_theta, intensity),
+                             mode='markers', name='Pics', marker=dict(color='red', size=10)))
+    fig.update_layout(title='XRR Signal', xaxis_title='2θ (deg)', yaxis_title='Intensity', yaxis_type='log')
+
+    # ===========================================================
+    results_text = f"Épaisseur : {t:.2f} nm | Densité : {rho_mass:.2f} g/cm³"
+
+    return results_text, fig
 
 # ===============================================================
-# 🚀 LANCEMENT DU SERVEUR DASH
-# ===============================================================
-if __name__ == "__main__":
-    app.run(debug=True, port=8050)
-
+if __name__ == '__main__':
+    app.run_server(debug=True, port=8050)
