@@ -18,8 +18,8 @@ app.title = "XRR Analysis"
 # Layout
 # ===============================================================
 app.layout = html.Div([
-    html.H1("XRR Analysis Tool"),
-    html.Label("Choisissez le programme"),
+    html.H1("Bienvenue sur XRR Analyse"),
+    html.Button("Lancer l'analyse", id="run-button", n_clicks=0)]
     dcc.Dropdown(
         id='program-dropdown',
         options=[
