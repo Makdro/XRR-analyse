@@ -1,81 +1,135 @@
-import streamlit as st
+import dash
+from dash import dcc, html
+from dash.dependencies import Input, Output, State
+import plotly.graph_objs as go
 import numpy as np
-import matplotlib.pyplot as plt
-from io import StringIO
+import io
+import base64
 
-# Import des trois modules (assure-toi qu’ils sont dans le même dossier)
-from xrr_auto_dash import run_auto
-from xrr_manual_dash import run_manual
-from xrr_thinlayer_dash import run_thinlayer
-
-st.set_page_config(page_title="XRR Analysis", layout="wide")
-
-st.title("📊 XRR Analysis Tool")
-st.markdown("Analyse automatique ou manuelle des mesures XRR (réflectométrie aux rayons X).")
+# Import des 3 scripts
+import xrr_auto_dash
+import xrr_manual_dash
+import xrr_thinlayer_dash
 
 # ===============================================================
-# 🗂️ Upload du fichier
+# INITIALISATION DE L’APP DASH
 # ===============================================================
-uploaded_file = st.file_uploader("Dépose ton fichier .xy ici", type=["xy", "txt"])
+app = dash.Dash(__name__)
+server = app.server  # nécessaire pour Render
 
-if uploaded_file:
-    # Lecture du fichier
-    stringio = StringIO(uploaded_file.getvalue().decode("utf-8"))
-    data = np.loadtxt(stringio)
-    two_theta = data[:, 0]
-    intensity = data[:, 1]
+# ===============================================================
+# MISE EN PAGE
+# ===============================================================
+app.layout = html.Div([
+    html.H1("Analyse XRR – Interface web", style={"textAlign": "center"}),
 
-    # Affichage signal brut
-    st.subheader("Signal brut")
-    fig, ax = plt.subplots(figsize=(8, 4))
-    ax.plot(two_theta, intensity, color='blue')
-    ax.set_yscale("log")
-    ax.set_xlabel("2θ (deg)")
-    ax.set_ylabel("Intensité (a.u.) [log]")
-    ax.grid(True, ls='--')
-    st.pyplot(fig)
+    html.Hr(),
 
-    # ===============================================================
-    # ⚙️ Choix du mode d’analyse
-    # ===============================================================
-    st.subheader("Choix du mode d'analyse")
-    mode = st.radio(
-        "Sélectionne ton mode :",
-        ["Auto", "Manual", "Thin Layer"]
-    )
+    # Sélection du mode
+    html.Div([
+        html.Label("🧭 Choisir le mode d'analyse :"),
+        dcc.Dropdown(
+            id="mode",
+            options=[
+                {"label": "Automatique", "value": "auto"},
+                {"label": "Manuel", "value": "manual"},
+                {"label": "Thin Layer", "value": "thinlayer"},
+            ],
+            value="auto",
+            clearable=False,
+            style={"width": "50%"}
+        )
+    ], style={"textAlign": "center", "marginBottom": "20px"}),
 
-    # ===============================================================
-    # 🚀 Lancement de l’analyse
-    # ===============================================================
-    if st.button("Lancer l'analyse"):
-        with st.spinner("Analyse en cours..."):
-            try:
-                if mode == "Auto":
-                    t, rho_mass, peaks = run_auto(two_theta, intensity)
-                    st.success(f"✅ Épaisseur : {t:.2f} nm — Densité : {rho_mass:.3f} g/cm³")
+    # Téléversement de fichier
+    html.Div([
+        html.Label("📂 Importer un fichier XRR (.xy) :"),
+        dcc.Upload(
+            id="upload-data",
+            children=html.Div(["Glisser-déposer ou ", html.A("sélectionner un fichier")]),
+            style={
+                "width": "80%", "height": "80px", "lineHeight": "80px",
+                "borderWidth": "2px", "borderStyle": "dashed",
+                "borderRadius": "10px", "textAlign": "center", "margin": "auto"
+            },
+            multiple=False
+        )
+    ], style={"textAlign": "center"}),
 
-                elif mode == "Manual":
-                    st.info("Clique sur le graphique ci-dessous pour sélectionner les oscillations.")
-                    fig, ax = plt.subplots(figsize=(8, 4))
-                    ax.plot(two_theta, intensity, color='blue')
-                    ax.set_yscale("log")
-                    ax.set_xlabel("2θ (deg)")
-                    ax.set_ylabel("Intensité (a.u.) [log]")
-                    ax.grid(True, ls='--')
-                    st.pyplot(fig)
+    html.Br(),
+    html.Div(id="output-message", style={"textAlign": "center", "color": "red"}),
 
-                    theta_input = st.text_input("Entre les positions 2θ des pics séparées par des virgules (ex: 0.9, 1.3, 1.7)")
-                    if theta_input:
-                        theta_peaks = [float(x.strip()) for x in theta_input.split(",")]
-                        results = run_manual(two_theta, intensity, theta_peaks)
-                        st.success(f"✅ Épaisseur estimée : {results['t']:.2f} nm (R²={results['r2']:.4f})")
+    html.Hr(),
 
-                elif mode == "Thin Layer":
-                    theta_input = st.text_input("Entre les positions 2θ des pics pour la couche mince (ex: 0.9, 1.3, 1.7)")
-                    if theta_input:
-                        theta_peaks = [float(x.strip()) for x in theta_input.split(",")]
-                        results = run_thinlayer(two_theta, intensity, theta_peaks)
-                        st.success(f"✅ Épaisseur estimée : {results['t']:.2f} nm (R²={results['r2']:.4f})")
+    # Graphique
+    dcc.Graph(id="xrr-graph", style={"height": "600px"}),
 
-            except Exception as e:
-                st.error(f"Erreur : {e}")
+    # Résultats
+    html.Div(id="results", style={"textAlign": "center", "fontSize": "20px", "marginTop": "30px"})
+])
+
+# ===============================================================
+# CALLBACK PRINCIPAL
+# ===============================================================
+@app.callback(
+    [Output("xrr-graph", "figure"),
+     Output("results", "children"),
+     Output("output-message", "children")],
+    [Input("upload-data", "contents"),
+     Input("mode", "value")],
+    [State("upload-data", "filename")]
+)
+def update_output(contents, mode, filename):
+    if contents is None:
+        return go.Figure(), "", "⚠️ Veuillez importer un fichier .xy"
+
+    try:
+        # Lecture du fichier uploadé
+        content_type, content_string = contents.split(',')
+        decoded = base64.b64decode(content_string)
+        data = np.loadtxt(io.BytesIO(decoded))
+
+        two_theta = data[:, 0]
+        intensity = data[:, 1]
+
+        # Exécution selon le mode choisi
+        if mode == "auto":
+            t, rho_mass, peaks = xrr_auto_dash.run_auto(two_theta, intensity)
+            result_text = f"🧠 Mode Automatique → Épaisseur = {t:.2f} nm | ρ = {rho_mass:.2f} g/cm³"
+
+        elif mode == "manual":
+            t, peaks = xrr_manual_dash.run_manual(two_theta, intensity)
+            result_text = f"🎯 Mode Manuel → Épaisseur = {t:.2f} nm"
+
+        elif mode == "thinlayer":
+            t, rho_mass = xrr_thinlayer_dash.run_thinlayer(two_theta, intensity)
+            result_text = f"💧 Thin Layer → Épaisseur = {t:.2f} nm | ρ = {rho_mass:.2f} g/cm³"
+
+        # Création du graphique
+        fig = go.Figure()
+        fig.add_trace(go.Scatter(x=two_theta, y=intensity, mode="lines", name="Signal XRR"))
+        if 'peaks' in locals():
+            fig.add_trace(go.Scatter(
+                x=peaks,
+                y=np.interp(peaks, two_theta, intensity),
+                mode="markers",
+                name="Pics sélectionnés",
+                marker=dict(color="red", size=8)
+            ))
+        fig.update_layout(
+            xaxis_title="2θ (deg)",
+            yaxis_title="Intensité (a.u.)",
+            yaxis_type="log",
+            template="plotly_white"
+        )
+
+        return fig, result_text, ""
+
+    except Exception as e:
+        return go.Figure(), "", f"❌ Erreur : {e}"
+
+# ===============================================================
+# LANCEMENT LOCAL
+# ===============================================================
+if __name__ == "__main__":
+    app.run_server(host="0.0.0.0", port=8050, debug=True)
