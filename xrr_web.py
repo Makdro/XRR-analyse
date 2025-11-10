@@ -7,6 +7,7 @@ import dash
 from dash import dcc, html, Input, Output, State
 import base64
 import io
+import plotly.graph_objects as go
 
 # ===============================================================
 # Dash App
@@ -19,7 +20,11 @@ app.title = "XRR Analysis"
 # ===============================================================
 app.layout = html.Div([
     html.H1("Bienvenue sur XRR Analyse"),
-    html.Button("Lancer l'analyse", id="run-button", n_clicks=0)]
+
+    html.Button("Lancer l'analyse", id="run-button", n_clicks=0),
+
+    html.Br(),
+    html.Label("Choisissez le programme d'analyse"),
     dcc.Dropdown(
         id='program-dropdown',
         options=[
@@ -29,6 +34,7 @@ app.layout = html.Div([
         ],
         value='auto'
     ),
+
     html.Br(),
     html.Label("Upload du fichier XRR (.xy)"),
     dcc.Upload(
@@ -41,6 +47,8 @@ app.layout = html.Div([
         },
         multiple=False
     ),
+
+    html.Br(),
     html.Label("Choisissez le matériau pour calcul densité"),
     dcc.Dropdown(
         id='material-dropdown',
@@ -54,6 +62,7 @@ app.layout = html.Div([
         ],
         value='SiO2'
     ),
+
     html.Br(),
     html.Button('Lancer analyse', id='run-button', n_clicks=0),
     html.Br(),
@@ -80,8 +89,8 @@ def parse_contents(contents):
     decoded = base64.b64decode(content_string)
     s = io.StringIO(decoded.decode('utf-8'))
     data = np.loadtxt(s)
-    two_theta = data[:,0]
-    intensity = data[:,1]
+    two_theta = data[:, 0]
+    intensity = data[:, 1]
     return two_theta, intensity
 
 # ===============================================================
@@ -115,7 +124,7 @@ def run_analysis(n_clicks, program, contents, material_choice):
         mat = materiaux_info[material_choice]
         M, Z = mat['M'], mat['Z']
     else:
-        M = 60.0  # placeholder, peut être input
+        M = 60.0  # valeur par défaut
         Z = 30
 
     # ===========================================================
@@ -124,48 +133,53 @@ def run_analysis(n_clicks, program, contents, material_choice):
         sigma_smooth = 5
         intensity_smooth = gaussian_filter1d(intensity, sigma=sigma_smooth)
         intensity_detrend = intensity / intensity_smooth
-        signal_log = np.log10(intensity+1)
+        signal_log = np.log10(intensity + 1)
         second_derivative = np.gradient(np.gradient(signal_log))
         peaks, _ = find_peaks(second_derivative, prominence=0.01)
-
-        # sélection des 10 premiers pics
         peaks_selected = peaks[:10]
-        theta_peaks = two_theta[peaks_selected]/2
+        theta_peaks = two_theta[peaks_selected] / 2
 
-    # Manual and Thinlayer: interactive selection simplified as first 10 maxima
+    # Manual et Thinlayer (simplifié ici)
     else:
         intensity_smooth = gaussian_filter1d(intensity, sigma=5)
         peaks, _ = find_peaks(intensity_smooth, distance=5)
-        theta_peaks = two_theta[peaks[:10]]/2
+        theta_peaks = two_theta[peaks[:10]] / 2
 
     # ===========================================================
     # Fit linéaire pour épaisseur
-    m = np.arange(1, len(theta_peaks)+1)
-    m2 = m**2
-    theta2 = np.deg2rad(theta_peaks)**2
-    reg = LinearRegression().fit(m2.reshape(-1,1), theta2)
+    m = np.arange(1, len(theta_peaks) + 1)
+    m2 = m ** 2
+    theta2 = np.deg2rad(theta_peaks) ** 2
+    reg = LinearRegression().fit(m2.reshape(-1, 1), theta2)
     a = reg.coef_[0]
-    t = np.sqrt(lambda_Cu**2 / (4*a))
+    t = np.sqrt(lambda_Cu ** 2 / (4 * a))
 
     # ===========================================================
     # Densité
     theta_c_rad = np.deg2rad(theta_peaks[0])
-    rho_e = (np.pi*theta_c_rad**2)/(r_e*lambda_Cu**2)
-    rho_mass = rho_e*M/(Z*N_A)*1e24
+    rho_e = (np.pi * theta_c_rad ** 2) / (r_e * lambda_Cu ** 2)
+    rho_mass = rho_e * M / (Z * N_A) * 1e24
 
     # ===========================================================
     # Graphique
-    import plotly.graph_objects as go
     fig = go.Figure()
     fig.add_trace(go.Scatter(x=two_theta, y=intensity, mode='lines', name='Signal'))
-    fig.add_trace(go.Scatter(x=theta_peaks*2, y=np.interp(theta_peaks*2, two_theta, intensity),
-                             mode='markers', name='Pics', marker=dict(color='red', size=10)))
-    fig.update_layout(title='XRR Signal', xaxis_title='2θ (deg)', yaxis_title='Intensity', yaxis_type='log')
+    fig.add_trace(go.Scatter(
+        x=theta_peaks * 2,
+        y=np.interp(theta_peaks * 2, two_theta, intensity),
+        mode='markers', name='Pics', marker=dict(color='red', size=10)
+    ))
+    fig.update_layout(
+        title='XRR Signal',
+        xaxis_title='2θ (deg)',
+        yaxis_title='Intensity',
+        yaxis_type='log'
+    )
 
     # ===========================================================
     results_text = f"Épaisseur : {t:.2f} nm | Densité : {rho_mass:.2f} g/cm³"
-
     return results_text, fig
+
 
 # ===============================================================
 if __name__ == '__main__':
